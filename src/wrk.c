@@ -24,6 +24,7 @@ static struct config {
     char    *host;
     char    *script;
     SSL_CTX *ctx;
+    struct sockaddr *rawAddr;
 } cfg;
 
 static struct {
@@ -102,6 +103,18 @@ int main(int argc, char **argv) {
     }
 	
     cfg.host = host;
+
+    // Perform our own lookup instead of getting it from Lua/thread->addr
+    struct addrinfo hints = {
+        .ai_family   = AF_UNSPEC,
+        .ai_socktype = SOCK_STREAM
+    };
+    int rc = -1;
+    if ((rc = getaddrinfo(cfg.host, "80", &hints, &cfg.rawAddr)) != 0) {
+        fprintf(stderr, "unable to look up %s: %d\n", cfg.host, rc);
+        ERR_print_errors_fp(stderr);
+        exit(1);
+    }
 	
     signal(SIGPIPE, SIG_IGN);
     signal(SIGINT,  SIG_IGN);
@@ -251,6 +264,11 @@ void *thread_main(void *arg) {
     thread *thread = arg;
     aeEventLoop *loop = thread->loop;
 
+    // We use rand() to do the IP balancing
+    // in connect_socket
+    srand(1);
+    thread->source_toggler = 0;
+
     thread->cs = zcalloc(thread->connections * sizeof(connection));
     tinymt64_init(&thread->rand, time_us());
     hdr_init(1, MAX_LATENCY, 3, &thread->latency_histogram);
@@ -296,7 +314,25 @@ void *thread_main(void *arg) {
 }
 
 static int connect_socket(thread *thread, connection *c) {
-    struct addrinfo *addr = thread->addr;
+    struct addrinfo *addr = NULL;
+
+    thread->source_toggler = !thread->source_toggler;
+    int family = thread->source_toggler ? AF_INET : AF_INET6;
+
+    struct addrinfo *p;
+    for (p = cfg.rawAddr; p != NULL; p = p->ai_next) {
+        if (p->ai_family == family) {
+            addr = p;
+            break;
+        }
+    }
+
+    // It's possible there's no AAAA address, so fall back to
+    // IPv4 always.
+    if (!addr) {
+        addr = thread->addr;
+    }
+
     struct aeEventLoop *loop = thread->loop;
     int fd, flags;
 
