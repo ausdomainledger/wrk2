@@ -264,9 +264,6 @@ void *thread_main(void *arg) {
     thread *thread = arg;
     aeEventLoop *loop = thread->loop;
 
-    // We use rand() to do the IP balancing
-    // in connect_socket
-    srand(1);
     thread->source_toggler = 0;
 
     thread->cs = zcalloc(thread->connections * sizeof(connection));
